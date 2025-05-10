@@ -1,0 +1,5 @@
+# akshu-ai/services/vision/requirements.txt
+
+fastapi==0.111.0
+uvicorn==0.30.1
+# Future dependencies will include libraries for computer vision (e.g., opencv-python, ultralytics (for YOLO), tensorflow/pytorch, deepfacelab)

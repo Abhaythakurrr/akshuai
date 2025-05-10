@@ -1,0 +1,60 @@
+# akshu-ai/config/config.yaml
+
+# Global configuration for AkshuAI
+
+settings:
+  environment: development
+  log_level: INFO
+
+services:
+  orchestrator:
+    host: localhost
+    port: 8000
+  language:
+    host: localhost
+    port: 8001
+  memory:
+    host: localhost
+    port: 8002
+  persona:
+    host: localhost
+    port: 8003
+  vision:
+    host: localhost
+    port: 8004
+  audio:
+    host: localhost
+    port: 8005
+  reasoning:
+    host: localhost
+    port: 8006
+  execution:
+    host: localhost
+    port: 8007
+
+databases:
+  postgresql:
+    host: localhost
+    port: 5432
+    database: akshuai_db
+    user: akshuai_user
+    password: akshuai_password # TODO: Use environment variables or a secrets manager
+  neo4j:
+    host: localhost
+    port: 7687
+    user: neo4j
+    password: neo4j_password # TODO: Use environment variables or a secrets manager
+  vector_db:
+    type: pinecone # or qdrant, weaviate
+    host: localhost # or cloud endpoint
+    port: 10000 # or cloud port
+    api_key: your_vector_db_api_key # TODO: Use environment variables or a secrets manager
+
+message_queue:
+  type: rabbitmq # or kafka
+  host: localhost
+  port: 5672
+  user: guest
+  password: guest # TODO: Use environment variables or a secrets manager
+
+# Add other configurations as needed (e.g., API keys for external services, model paths)

@@ -1,0 +1,5 @@
+# akshu-ai/services/reasoning/requirements.txt
+
+fastapi==0.111.0
+uvicorn==0.30.1
+# Future dependencies will include libraries/logic for reasoning and planning (e.g., specialized planning algorithms, potentially interaction with LLMs via API calls)

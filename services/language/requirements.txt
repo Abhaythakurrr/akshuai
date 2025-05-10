@@ -1,0 +1,6 @@
+# akshu-ai/services/language/requirements.txt
+
+fastapi==0.111.0
+uvicorn==0.30.1
+transformers
+torch # or tensorflow, depending on the model
