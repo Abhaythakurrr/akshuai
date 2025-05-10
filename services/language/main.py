@@ -1,228 +1,484 @@
-# akshu-ai/services/language/main.py
+import os
+import logging
+from typing import Dict, Any, List
+from fastapi import FastAPI, HTTPException, Depends
+from fastapi.security import OAuth2PasswordBearer
+from pydantic import BaseModel, root_validator
+from transformers import AutoModelForCausalLM, AutoTokenizer, TextGenerationPipeline
+from better_profanity import profanity
+from dotenv import load_dotenv
+from prometheus_client import Counter, generate_latest
+from starlette.responses import PlainTextResponse
+import torch
+import numpy as np
 
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional, Union
+# Load environment variables
+load_dotenv()
 
-# Import necessary libraries for LLMs and embeddings
-# These imports assume you have the required libraries installed (e.g., transformers, torch, sentence-transformers)
-try:
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-    from sentence_transformers import SentenceTransformer
-    import torch
-    # TODO: Add logic to check for GPU availability and set the device accordingly
-    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Using device: {DEVICE}")
-except ImportError as e:
-    print(f"Error importing AI libraries: {e}")
-    print("Please ensure transformers, torch/tensorflow, and sentence-transformers are installed.")
-    # Define placeholder classes/functions if imports fail, or raise a critical error
-    AutoModelForCausalLM = None
-    AutoTokenizer = None
-    SentenceTransformer = None
-    torch = None
-    DEVICE = "cpu"
+# Initialize FastAPI app
+app = FastAPI(
+    title="AkshuAI Language Module",
+    description="Language module for AkshuAI, providing text generation, embedding, tokenization, and summarization with persona customization and content filtering.",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
 
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-app = FastAPI()
+# OAuth2 authentication
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-# --- Configuration and Model Loading ---
+# Prometheus metrics
+requests_counter = Counter("language_requests_total", "Total requests to language module", ["endpoint"])
 
-# Placeholder for loaded models and tokenizers
-# TODO: Implement a more robust model management system:
-# - Load multiple models (different sizes, types)
-# - Lazy loading or dynamic switching based on request/task
-# - Handle model parallelism or distribution for large models
-# - Load model configurations from a central config service or file
+# Configuration
+MODEL_NAME = os.getenv("LANGUAGE_MODEL_NAME", "meta-llama/Llama-3-8B")
+MAX_TOKENS = int(os.getenv("MAX_TOKENS", 200))
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+logger.info(f"Using device: {DEVICE}")
 
-language_model = None # For text generation (e.g., LLaMA, Phi)
+# Global model and tokenizer
+language_model = None
 language_tokenizer = None
+text_generator = None
 
-embedding_model = None # For generating text embeddings
-
-# TODO: Make model names configurable
-DEFAULT_LANGUAGE_MODEL_NAME = "gpt2" # A small model for basic testing
-DEFAULT_EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2" # A common embedding model
-
-def load_language_model(model_name: str = DEFAULT_LANGUAGE_MODEL_NAME):
-    """Loads a language model and tokenizer."""
-    global language_model, language_tokenizer
-    if AutoModelForCausalLM is None or AutoTokenizer is None:
-        print("AI libraries not available, cannot load language model.")
-        return
-    try:
-        print(f"Loading language model: {model_name}...")
-        language_tokenizer = AutoTokenizer.from_pretrained(model_name)
-        language_model = AutoModelForCausalLM.from_pretrained(model_name).to(DEVICE)
-        language_model.eval() # Set model to evaluation mode
-        print(f"Successfully loaded language model: {model_name}")
-    except Exception as e:
-        print(f"Error loading language model {model_name}: {e}")
-        # TODO: Implement proper error handling (e.g., retry, alert)
-        language_model = None
-        language_tokenizer = None
-
-def load_embedding_model(model_name: str = DEFAULT_EMBEDDING_MODEL_NAME):
-    """Loads an embedding model."""
-    global embedding_model
-    if SentenceTransformer is None:
-        print("SentenceTransformer library not available, cannot load embedding model.")
-        return
-    try:
-        print(f"Loading embedding model: {model_name}...")
-        embedding_model = SentenceTransformer(model_name, device=DEVICE)
-        print(f"Successfully loaded embedding model: {model_name}")
-    except Exception as e:
-        print(f"Error loading embedding model {model_name}: {e}")
-        # TODO: Implement proper error handling
-        embedding_model = None
-
-# Load models on startup
-# TODO: Implement lazy loading or background loading
-load_language_model()
-load_embedding_model()
-
-# --- Pydantic Models for API ----
-
+# Pydantic models
 class GenerateRequest(BaseModel):
-    prompt: str = Field(..., description="The input text prompt for the language model.")
-    max_tokens: int = Field(150, description="The maximum number of tokens to generate.", ge=1, le=2048) # Example limits
-    temperature: float = Field(0.7, description="Controls randomness in generation. Lower values make output more deterministic.", ge=0.0, le=2.0)
-    top_p: float = Field(1.0, description="Nucleus sampling. Only the most likely tokens with probabilities adding up to top_p are kept.", ge=0.0, le=1.0)
-    # TODO: Add more generation parameters as needed (e.g., num_beams, do_sample, repetition_penalty)
-    stop_sequences: Optional[List[str]] = Field(None, description="Sequences that stop the generation.")
-    user_id: Optional[str] = Field(None, description="Optional user ID for personalization or logging.")
-    session_id: Optional[str] = Field(None, description="Optional session ID for conversational context.")
-    # TODO: Add context field for RAG or conversation history
-    context: Optional[Dict[str, Any]] = Field(None, description="Additional context for the LLM (e.g., retrieved documents from memory).")
+    prompts: List[str]
+    max_tokens: int = MAX_TOKENS
+    user_id: str = "anonymous"
+    session_id: str = "default"
+    context: Dict[str, Any] = {}
+
+    @root_validator(pre=True)
+    def validate_context(cls, values):
+        context = values.get("context", {})
+        if "persona" in context and not isinstance(context["persona"], dict):
+            raise ValueError("context.persona must be a dictionary")
+        return values
 
 class GenerateResponse(BaseModel):
-    generated_text: str = Field(..., description="The text generated by the language model.")
-    # TODO: Add more response details (e.g., finish reason, token usage)
-    finish_reason: str = Field("completed", description="The reason the generation finished (e.g., 'max_tokens', 'stop_sequence').")
+    generated_texts: List[Dict[str, Any]]
+    text: str
+    finish_reason: str
+    token_usage: Dict[str, int] = {}
 
 class EmbedRequest(BaseModel):
-    texts: Union[List[str], str] = Field(..., description="A single string or a list of strings to embed.")
-    # TODO: Add model name selection if multiple embedding models are supported
+    texts: List[str]
+    user_id: str = "anonymous"
+    session_id: str = "default"
 
 class EmbedResponse(BaseModel):
-    embeddings: List[List[float]] = Field(..., description="A list of embeddings, where each embedding is a list of floats.")
-    model: str = Field(..., description="The name of the embedding model used.")
+    embeddings: List[List[float]]
+    token_usage: Dict[str, int] = {}
 
 class TokenizeRequest(BaseModel):
-    text: str = Field(..., description="The text to tokenize.")
+    texts: List[str]
+    user_id: str = "anonymous"
+    session_id: str = "default"
 
 class TokenizeResponse(BaseModel):
-    tokens: List[int] = Field(..., description="A list of token IDs.")
-    n_tokens: int = Field(..., description="The number of tokens.")
+    tokens: List[List[int]]
+    token_counts: List[int]
 
-# --- API Endpoints ---
+class SummarizeRequest(BaseModel):
+    text: str
+    max_length: int = 100
+    user_id: str = "anonymous"
+    session_id: str = "default"
+    context: Dict[str, Any] = {}
+
+class SummarizeResponse(BaseModel):
+    summary: str
+    token_usage: Dict[str, int] = {}
+
+def load_model():
+    """Load the language model and tokenizer at startup."""
+    global language_model, language_tokenizer, text_generator
+    try:
+        logger.info(f"Loading model: {MODEL_NAME}")
+        language_tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+        language_model = AutoModelForCausalLM.from_pretrained(
+            MODEL_NAME,
+            torch_dtype=torch.float16 if DEVICE == "cuda" else torch.float32,
+            device_map="auto"
+        )
+        text_generator = TextGenerationPipeline(
+            model=language_model,
+            tokenizer=language_tokenizer,
+            device=0 if DEVICE == "cuda" else -1,
+            framework="pt",
+            max_new_tokens=MAX_TOKENS,
+            pad_token_id=language_tokenizer.eos_token_id
+        )
+        logger.info("Model and tokenizer loaded successfully.")
+    except Exception as e:
+        logger.error(f"Failed to load model: {e}")
+        raise RuntimeError(f"Failed to load model: {e}")
+
+# Initialize profanity filter
+try:
+    profanity.load_censor_words()
+except Exception as e:
+    logger.warning(f"Failed to load profanity filter: {e}")
+
+# Load model at startup
+try:
+    load_model()
+except Exception as e:
+    logger.critical(f"Startup failed: {e}")
+    raise
+
+def format_persona_instructions(persona: Dict[str, Any]) -> str:
+    """Generate prompt instructions based on persona data."""
+    if not persona:
+        return ""
+    
+    tone = persona.get("tone", "neutral").lower()
+    style = persona.get("style", "general").lower()
+    
+    instructions = []
+    if tone == "formal":
+        instructions.append("Respond in a formal and professional tone.")
+    elif tone == "casual":
+        instructions.append("Use a friendly and casual tone.")
+    elif tone == "technical":
+        instructions.append("Provide a detailed and technical explanation.")
+    
+    if style == "concise":
+        instructions.append("Keep the response brief and to the point.")
+    elif style == "verbose":
+        instructions.append("Provide a detailed and comprehensive response.")
+    
+    return " ".join(instructions) + " " if instructions else ""
+
+def filter_content(text: str) -> tuple[bool, str]:
+    """Check text for inappropriate content. Returns (is_clean, message)."""
+    # Ensure profanity filter is loaded (can be done once globally)
+    try:
+        profanity.contains_profanity("test") # Check if loaded, lazy load if needed
+    except:
+        profanity.load_censor_words()
+
+    if profanity.contains_profanity(text):
+        return False, "Text contains inappropriate language."
+    sensitive_keywords = ["violence", "hate", "discrimination"]
+    for keyword in sensitive_keywords:
+        if keyword in text.lower():
+            return False, f"Text contains sensitive topic: {keyword}."
+    return True, ""
+
+@app.on_event("startup")
+async def startup_event():
+    logger.info("Language module started.")
 
 @app.get("/")
-def read_root():
-    return {"message": "Language service is running"}
+async def read_root():
+    requests_counter.labels(endpoint="/").inc()
+    return {"message": "Language module is running"}
 
-@app.post("/generate", response_model=GenerateResponse)
-async def generate_text(request: GenerateRequest):
-    """Generates text based on a prompt using the loaded language model."""
+@app.get("/health")
+async def health_check():
+    requests_counter.labels(endpoint="/health").inc()
     if language_model is None or language_tokenizer is None:
         raise HTTPException(status_code=503, detail="Language model is not loaded.")
+    return {"status": "healthy"}
 
-    # TODO: Implement sophisticated prompting logic:
-    # - Incorporate conversation history (retrieved from Memory service via Orchestrator)
-    # - Integrate retrieved context (RAG) into the prompt
-    # - Format the prompt based on the model's requirements
-    # - Handle different prompt templates or styles (e.g., chat, instruction)
+@app.get("/metrics")
+async def metrics():
+    requests_counter.labels(endpoint="/metrics").inc()
+    return PlainTextResponse(generate_latest())
 
-    # Simple prompt for now
-    prompt_text = request.prompt
-    if request.context:
-        # Basic example of adding context (needs refinement based on context structure and model)
-        context_string = "
-".join([f"{k}: {v}" for k, v in request.context.items()])
-        prompt_text = f"Context: {context_string}
+@app.post("/generate", response_model=GenerateResponse)
+async def generate_text(request: GenerateRequest, token: str = Depends(oauth2_scheme)):
+    """Generates text from one or more prompts, applying persona-based tone and content filtering.
+    
+    Args:
+        request: GenerateRequest with prompts, max_tokens, user_id, session_id, and context.
+        token: OAuth2 token for authentication.
+    
+    Returns:
+        GenerateResponse with generated texts, finish reason, and token usage.
+    
+    Raises:
+        HTTPException: If model is not loaded (503), input is inappropriate (400), or generation fails (500).
+    """
+    requests_counter.labels(endpoint="/generate").inc()
+    logger.info(f"Received generate request from user {request.user_id}: {len(request.prompts)} prompts")
 
-{request.prompt}"
-        print(f"Prompt with context: {prompt_text}")
+    if language_model is None or language_tokenizer is None or text_generator is None:
+        logger.error("Language model or tokenizer not loaded.")
+        raise HTTPException(status_code=503, detail="Language model is not loaded.")
+
+    max_tokens = min(request.max_tokens, MAX_TOKENS)
+    persona = request.context.get("persona", {})
+    persona_instructions = format_persona_instructions(persona)
+
+    generated_texts = []
+    total_input_tokens = 0
+    total_output_tokens = 0
 
     try:
-        # TODO: Implement robust tokenization, handling of long inputs (truncation, splitting)
-        input_ids = language_tokenizer.encode(prompt_text, return_tensors="pt").to(DEVICE)
+        full_prompts = [f"{persona_instructions}{prompt.replace('<', '<').replace('>', '>')}".strip() for prompt in request.prompts]
+        
+        # Filter prompts
+        for prompt in full_prompts:
+            is_clean, message = filter_content(prompt)
+            if not is_clean:
+                logger.warning(f"Prompt rejected: {message}")
+                raise HTTPException(status_code=400, detail=message)
 
-        # TODO: Implement sophisticated generation parameters and strategies:
-        # - Beam search, sampling, top-k, top-p, etc.
-        # - Handle stop sequences correctly during generation
-        # - Manage attention masks and past_key_values for efficiency in conversational settings
-        # - Implement output filtering or moderation if necessary
-
-        # Basic generation call
-        output = language_model.generate(
-            input_ids,
-            max_length=request.max_tokens + len(input_ids[0]), # max_length includes input tokens
-            temperature=request.temperature,
-            top_p=request.top_p,
-            num_return_sequences=1,
-            pad_token_id=language_tokenizer.eos_token_id, # Or a specific pad token if defined
-            # TODO: Add stop sequence handling during generation
+        logger.debug(f"Generating text for {len(full_prompts)} prompts...")
+        generation_outputs = text_generator(
+            full_prompts,
+            max_new_tokens=max_tokens,
+            do_sample=True,
+            temperature=0.7,
+            top_p=0.9,
+            return_full_text=False,
+            pad_token_id=language_tokenizer.eos_token_id,
+            batch_size=4
         )
 
-        # TODO: Implement robust decoding, handling special tokens
-        generated_text = language_tokenizer.decode(output[0][len(input_ids[0]):], skip_special_tokens=True)
+        for i, output in enumerate(generation_outputs):
+            generated_text = output["generated_text"].strip()
+            
+            is_clean, message = filter_content(generated_text)
+            if not is_clean:
+                logger.warning(f"Generated text rejected: {message}")
+                generated_text = "Content filtered due to inappropriate content."
+            
+            finish_reason = "stop" if len(generated_text) < max_tokens else "length"
+            # Re-calculate token usage based on the *generated* text, not including prompt again
+            input_tokens_single = len(language_tokenizer.encode(full_prompts[i])) # Tokens for original prompt
+            output_tokens_single = len(language_tokenizer.encode(generated_text)) # Tokens for generated text
+            
+            generated_texts.append({
+                "prompt": request.prompts[i], # Store original prompt for reference
+                "generated_text": generated_text,
+                "finish_reason": finish_reason,
+                "token_usage": {
+                    "prompt_tokens": input_tokens_single,
+                    "completion_tokens": output_tokens_single,
+                    "total_tokens": input_tokens_single + output_tokens_single
+                }
+            })
+            
+            total_input_tokens += input_tokens_single
+            total_output_tokens += output_tokens_single
 
-        # Determine finish reason (basic placeholder)
-        finish_reason = "max_tokens" if len(output[0]) >= request.max_tokens + len(input_ids[0]) else "completed"
-        if request.stop_sequences and any(seq in generated_text for seq in request.stop_sequences):
-             finish_reason = "stop_sequence"
-             # TODO: Truncate text after stop sequence if necessary
+        text = generated_texts[0]["generated_text"] if generated_texts else ""
+        overall_finish_reason = generated_texts[0]["finish_reason"] if generated_texts else "stop"
 
-        return GenerateResponse(generated_text=generated_text, finish_reason=finish_reason)
+        response = {
+            "generated_texts": generated_texts,
+            "text": text,  # For orchestrator compatibility (consider if orchestrator can handle batch?)
+            "finish_reason": overall_finish_reason,
+            "token_usage": {
+                "prompt_tokens": total_input_tokens,
+                "completion_tokens": total_output_tokens,
+                "total_tokens": total_input_tokens + total_output_tokens
+            }
+        }
+
+        logger.info(f"Generated {len(generated_texts)} texts. First: {text[:50]}...")
+        return response
 
     except Exception as e:
-        print(f"Error during text generation: {e}")
-        # TODO: Implement proper error logging and potentially re-raise a specific exception
+        logger.error(f"Error during batch text generation: {e}")
         raise HTTPException(status_code=500, detail=f"Error during text generation: {e}")
 
 @app.post("/embed", response_model=EmbedResponse)
-async def embed_text(request: EmbedRequest):
-    """Generates embeddings for the given text(s) using the loaded embedding model."""
-    if embedding_model is None:
-         raise HTTPException(status_code=503, detail="Embedding model is not loaded.")
+async def embed_text(request: EmbedRequest, token: str = Depends(oauth2_scheme)):
+    """Generates embeddings for input texts using the language model.
+    
+    Args:
+        request: EmbedRequest with texts, user_id, and session_id.
+        token: OAuth2 token for authentication.
+    
+    Returns:
+        EmbedResponse with embeddings and token usage.
+    
+    Raises:
+        HTTPException: If model is not loaded (503) or embedding fails (500).WindowState.Normal
+    """
+    requests_counter.labels(endpoint="/embed").inc()
+    logger.info(f"Received embed request from user {request.user_id}: {len(request.texts)} texts")
 
-    # Ensure texts is a list
-    texts_list = [request.texts] if isinstance(request.texts, str) else request.texts
+    # For embeddings, using a dedicated Sentence Transformer model is generally better
+    # However, for demonstration, we will use the loaded language model's embeddings
 
-    if not texts_list:
-        return EmbedResponse(embeddings=[], model=DEFAULT_EMBEDDING_MODEL_NAME)
+    if language_model is None or language_tokenizer is None:
+        logger.error("Language model or tokenizer not loaded.")
+        raise HTTPException(status_code=503, detail="Language model is not loaded.")
 
     try:
-        # TODO: Implement batch processing for efficiency, especially for large lists of texts
-        # TODO: Handle potential input text cleaning or preprocessing before embedding
+        # Filter input texts
+        for text in request.texts:
+            is_clean, message = filter_content(text)
+            if not is_clean:
+                logger.warning(f"Text rejected: {message}")
+                raise HTTPException(status_code=400, detail=message)
 
-        # Generate embeddings
-        # The encode method handles tokenization and pooling internally
-        embeddings = embedding_model.encode(texts_list, convert_to_list=True)
+        # Tokenize and generate embeddings
+        inputs = language_tokenizer(
+            request.texts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=512
+        ).to(DEVICE)
+        
+        with torch.no_grad():
+            # Get the last hidden states from the model
+            outputs = language_model(**inputs, output_hidden_states=True)
+            # Use the last hidden state, mean-pooled over non-padding tokens
+            # Need to handle attention mask for proper pooling
+            last_hidden_states = outputs.hidden_states[-1]
+            # Create a mask for non-padding tokens
+            mask = inputs['attention_mask'].unsqueeze(-1).expand(last_hidden_states.size()).float()
+            # Apply mask and sum, then divide by the number of non-padding tokens
+            sum_embeddings = torch.sum(last_hidden_states * mask, dim=1)
+            sum_mask = torch.clamp(mask.sum(dim=1), min=1e-9) # Avoid division by zero
+            embeddings = (sum_embeddings / sum_mask).cpu().numpy().tolist()
 
-        return EmbedResponse(embeddings=embeddings, model=DEFAULT_EMBEDDING_MODEL_NAME)
+        token_usage = {
+            "prompt_tokens": sum(len(language_tokenizer.encode(text)) for text in request.texts), # Count tokens in original texts
+            "completion_tokens": 0, # Embeddings don't generate new tokens in this sense
+            "total_tokens": sum(len(language_tokenizer.encode(text)) for text in request.texts)
+        }
+
+        response = {
+            "embeddings": embeddings,
+            "token_usage": token_usage
+        }
+
+        logger.info(f"Generated {len(embeddings)} embeddings.")
+        return response
 
     except Exception as e:
-        print(f"Error during text embedding: {e}")
-        # TODO: Implement proper error logging
-        raise HTTPException(status_code=500, detail=f"Error during text embedding: {e}")
+        logger.error(f"Error during embedding generation: {e}")
+        raise HTTPException(status_code=500, detail=f"Error during embedding generation: {e}")
 
 @app.post("/tokenize", response_model=TokenizeResponse)
-async def tokenize_text(request: TokenizeRequest):
-    """Tokenizes the given text using the language model's tokenizer.""" sponsorships
+async def tokenize_text(request: TokenizeRequest, token: str = Depends(oauth2_scheme)):
+    """Tokenizes input texts using the model's tokenizer.
+    
+    Args:
+        request: TokenizeRequest with texts, user_id, and session_id.
+        token: OAuth2 token for authentication.
+    
+    Returns:
+        TokenizeResponse with token IDs and counts.
+    
+    Raises:
+        HTTPException: If tokenizer is not loaded (503) or tokenization fails (500).
+    """
+    requests_counter.labels(endpoint="/tokenize").inc()
+    logger.info(f"Received tokenize request from user {request.user_id}: {len(request.texts)} texts")
+
     if language_tokenizer is None:
-        raise HTTPException(status_code=503, detail="Language tokenizer is not loaded.")
+        logger.error("Tokenizer not loaded.")
+        raise HTTPException(status_code=503, detail="Tokenizer is not loaded.")
 
     try:
-        # TODO: Handle different tokenization options (e.g., add special tokens)
-        tokens = language_tokenizer.encode(request.text)
-        return TokenizeResponse(tokens=tokens, n_tokens=len(tokens))
+        tokens = [language_tokenizer.encode(text, add_special_tokens=True) for text in request.texts]
+        token_counts = [len(t) for t in tokens]
+
+        response = {
+            "tokens": tokens,
+            "token_counts": token_counts
+        }
+
+        logger.info(f"Tokenized {len(tokens)} texts.")
+        return response
+
     except Exception as e:
-        print(f"Error during tokenization: {e}")
+        logger.error(f"Error during tokenization: {e}")
         raise HTTPException(status_code=500, detail=f"Error during tokenization: {e}")
 
-# TODO: Add more endpoints for other NLP tasks (e.g., summarization, translation,
-# sentiment analysis, named entity recognition) as defined by the architecture.
-# Each endpoint should have appropriate Pydantic models and detailed internal logic.
+@app.post("/summarize", response_model=SummarizeResponse)
+async def summarize_text(request: SummarizeRequest, token: str = Depends(oauth2_scheme)):
+    """Summarizes input text using the language model.
+    
+    Args:
+        request: SummarizeRequest with text, max_length, user_id, session_id, and context.
+        token: OAuth2 token for authentication.
+    
+    Returns:
+        SummarizeResponse with summary and token usage.
+    
+    Raises:
+        HTTPException: If model is not loaded (503), input is inappropriate (400), or summarization fails (500).
+    """
+    requests_counter.labels(endpoint="/summarize").inc()
+    logger.info(f"Received summarize request from user {request.user_id}: {request.text[:50]}...")
+
+    if language_model is None or language_tokenizer is None or text_generator is None:
+        logger.error("Language model or tokenizer not loaded.")
+        raise HTTPException(status_code=503, detail="Language model is not loaded.")
+
+    # Filter input text
+    is_clean, message = filter_content(request.text)
+    if not is_clean:
+        logger.warning(f"Text rejected: {message}")
+        raise HTTPException(status_code=400, detail=message)
+
+    max_length = min(request.max_length, MAX_TOKENS) # Use MAX_TOKENS as an upper bound for summary length
+    persona = request.context.get("persona", {})
+    persona_instructions = format_persona_instructions(persona)
+
+    try:
+        # Prepare summarization prompt
+        # Adding persona instructions to the summarization prompt
+        prompt = f"{persona_instructions}Summarize the following text in no more than {max_length} tokens: {request.text}"
+        
+        logger.debug(f"Summarization prompt: {prompt[:100]}...")
+
+        # Use the text_generator pipeline for summarization as well
+        # Using non-deterministic sampling might give more natural summaries, but deterministic is often preferred.
+        # Set temperature to a low value for more focused generation.
+        generation_output = text_generator(
+            prompt,
+            max_new_tokens=max_length,
+            do_sample=False,  # Deterministic for summarization
+            temperature=0.1, # Lower temperature for more focused summary
+            top_p=1.0,
+            return_full_text=False,
+            pad_token_id=language_tokenizer.eos_token_id
+            # TODO: Add stop sequence handling during generation if needed for summarization
+        )
+
+        summary = generation_output[0]["generated_text"].strip()
+        
+        is_clean, message = filter_content(summary)
+        if not is_clean:
+            logger.warning(f"Summary rejected: {message}")
+            summary = "Summary filtered due to inappropriate content."
+
+        # Calculate token usage for the summarization task
+        input_tokens = len(language_tokenizer.encode(prompt)) # Tokens for the full prompt (instruction + text)
+        output_tokens = len(language_tokenizer.encode(summary))
+        token_usage = {
+            "prompt_tokens": input_tokens,
+            "completion_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens
+        }
+
+        response = {
+            "summary": summary,
+            "token_usage": token_usage
+        }
+
+        logger.info(f"Generated summary: {summary[:50]}...")
+        return response
+
+    except Exception as e:
+        logger.error(f"Error during summarization: {e}")
+        raise HTTPException(status_code=500, detail=f"Error during summarization: {e}")
+
+# TODO: Add other endpoints as defined by the architecture (e.g., translation, sentiment analysis).
+# Ensure these endpoints are also updated to handle context, persona, and content filtering if relevant.

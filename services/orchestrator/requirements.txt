@@ -3,3 +3,6 @@
 fastapi==0.111.0
 uvicorn==0.30.1
 requests
+redis==5.0.1 # Or a recent compatible version
+python-dotenv==1.0.0 # Or a recent compatible version
+prometheus-client==0.17.1 # Or a recent compatible version

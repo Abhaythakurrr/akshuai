@@ -1,52 +1,64 @@
 import { useEffect, useState } from 'react';
-import { Box, Button, Input, VStack, Text, Spinner } from '@chakra-ui/react';
+import {
+  Box,
+  Button,
+  Input,
+  VStack,
+  Text,
+  Spinner,
+  useToast,
+} from '@chakra-ui/react';
 import { motion } from 'framer-motion';
 import { auth, db, functions } from '../lib/firebase';
-import { signInWithPopup, GoogleAuthProvider, onAuthStateChanged } from 'firebase/auth';
+import {
+  signInWithPopup,
+  GoogleAuthProvider,
+  onAuthStateChanged,
+} from 'firebase/auth';
 import { collection, addDoc, onSnapshot } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
-import Starfield from '../components/Starfield';
 import dynamic from 'next/dynamic';
+import Starfield from '../components/Starfield';
+import Logo from '../components/Logo';
 
-// Dynamic import for webfontloader
-const WebFont = dynamic(() => import('webfontloader').then((mod) => mod.default), {
-  ssr: false,
-});
+const WebFont = dynamic(() => import('webfontloader'), { ssr: false });
 
 export default function Home() {
   const [prompt, setPrompt] = useState('');
   const [response, setResponse] = useState('');
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(false);
+  const toast = useToast();
 
   useEffect(() => {
-    // Debug: Log WebFont to verify import
-    console.log('WebFont:', WebFont);
     if (WebFont && typeof WebFont.load === 'function') {
       WebFont.load({
         google: {
           families: ['Orbitron:400,700', 'Inter:400,600'],
         },
       });
-    } else {
-      console.warn('WebFont.load is not available, falling back to CSS');
     }
   }, []);
 
-  // Rest of the component (auth, chatbot, etc.) remains unchanged
   useEffect(() => {
     const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
       setUser(user);
     });
 
     if (user) {
-      const unsubscribeMemory = onSnapshot(collection(db, 'memory'), (snapshot) => {
-        snapshot.docChanges().forEach((change) => {
-          if (change.type === 'added' && change.doc.data().user_id === user.uid) {
-            setResponse(change.doc.data().value);
-          }
-        });
-      });
+      const unsubscribeMemory = onSnapshot(
+        collection(db, 'memory'),
+        (snapshot) => {
+          snapshot.docChanges().forEach((change) => {
+            if (
+              change.type === 'added' &&
+              change.doc.data().user_id === user.uid
+            ) {
+              setResponse(change.doc.data().value);
+            }
+          });
+        }
+      );
       return () => unsubscribeMemory();
     }
 
@@ -58,8 +70,21 @@ export default function Home() {
       const provider = new GoogleAuthProvider();
       const result = await signInWithPopup(auth, provider);
       setUser(result.user);
+      toast({
+        title: 'Logged in successfully.',
+        status: 'success',
+        duration: 3000,
+        isClosable: true,
+      });
     } catch (error) {
       console.error('Login error:', error);
+      toast({
+        title: 'Login failed.',
+        description: error.message,
+        status: 'error',
+        duration: 3000,
+        isClosable: true,
+      });
     }
   };
 
@@ -111,20 +136,9 @@ export default function Home() {
         animate={{ opacity: 1, y: 0 }}
         transition="0.8s ease-out"
       >
-        <Text
-          fontSize="5xl"
-          fontWeight="bold"
-          fontFamily={'"Orbitron", sans-serif'}
-          bgGradient="linear(to-r, #00FFFF, #BB00FF)"
-          bgClip="text"
-          as={motion.div}
-          whileHover={{ scale: 1.05 }}
-        >
-          AkshuAI Nexus
-        </Text>
+        <Logo />
         {user ? (
-          <>
-            <Box
+          <>             <Box
               as={motion.div}
               w="full"
               bg="rgba(255, 255, 255, 0.05)"
@@ -203,7 +217,7 @@ export default function Home() {
             as={motion.div}
             whileTap={{ scale: 0.95 }}
           >
-            Enter the Nexus
+            Sign in with Google
           </Button>
         )}
       </VStack>

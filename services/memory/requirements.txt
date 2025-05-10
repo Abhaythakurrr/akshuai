@@ -1,21 +1,6 @@
-# akshu-ai/services/memory/requirements.txt
-
-fastapi==0.111.0
-uvicorn==0.30.1
-# Database clients for memory storage (choose based on actual implementation):
-# Neo4j client for graph database:
-# neo4j
-# Vector database clients (choose one or more):
-# pinecone-client
-# qdrant-client
-# weaviate-client
-# Relational database client (e.g., for user profiles or metadata):
-# psycopg2-binary # For PostgreSQL
-# mysql-connector-python # For MySQL
-
-# Libraries for handling/generating embeddings (if not done in language service):
-# sentence-transformers
-# torch # or tensorflow
-
-# For unique ID generation:
-# uuid
+fastapi==0.103.0
+pydantic==2.4.2
+redis==4.5.4
+python-dotenv==1.0.0
+prometheus-client==0.17.1
+uvicorn==0.23.2

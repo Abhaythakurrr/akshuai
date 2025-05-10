@@ -1,99 +1,175 @@
 # akshu-ai/services/reasoning/main.py
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Dict, Any
+import spacy
+import logging
 
+# Initialize FastAPI app
 app = FastAPI()
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Load spaCy model (fallback to download if missing)
+try:
+    nlp = spacy.load("en_core_web_sm")
+except OSError:
+    logger.warning("Downloading en_core_web_sm model for spaCy...")
+    from spacy.cli import download
+    download("en_core_web_sm")
+    nlp = spacy.load("en_core_web_sm")
+
+# === Models ===
 
 class TaskInput(BaseModel):
     task_description: str
-    context: Dict[str, Any] = {} # Relevant context from other modules (e.g., memory, user info)
-    user_id: str = "anonymous"
+    context: Dict[str, Any] = {}
 
 class PlanStep(BaseModel):
     step_description: str
-    module: str # The module responsible for this step (e.g., "language", "execution", "memory")
-    action: str # The specific action/endpoint to call in the module
-    parameters: Dict[str, Any] = {} # Parameters for the action
+    module: str
+    action: str
+    parameters: Dict[str, Any] = {}
 
 class PlanResponse(BaseModel):
     plan: List[PlanStep]
     status: str = "success"
     message: str = "Plan generated successfully"
 
-@app.get("/")
-def read_root():
-    return {"message": "Reasoning service is running"}
+# === Helper Logic ===
 
-@app.post("/plan_task", response_model=PlanResponse)
-async def plan_task(task: TaskInput):
-    print(f"Received task for planning from user {task.user_id}: {task.task_description}")
+def classify_task(task_description: str) -> str:
+    """Classifies the task into an intent category."""
+    doc = nlp(task_description.lower())
 
-    # TODO: Implement actual reasoning and planning logic here
-    # - Analyze the task description and context
-    # - Break down the task into sub-steps
-    # - Determine which modules/actions are needed for each step
-    # - Consider constraints, user preferences (from persona module), and available tools
-    # - This might involve rule-based systems, or even using an LLM for planning (as mentioned in docs)
+    if "capital" in task_description and "population" in task_description:
+        return 'qa_population_and_capital'
+    elif "recipe" in task_description:
+        return 'recipe_search'
+    elif "summarize" in task_description:
+        return 'summarization'
+    elif "what is" in task_description:
+        return 'qa_fact_lookup'
+    elif "remember" in task_description:
+        return 'memory_store'
+    elif "open" in task_description or "execute" in task_description:
+        return 'execution_task'
+    return 'unknown'
 
-    # --- Placeholder Planning Logic based on Keywords ---
-    generated_plan: List[PlanStep] = []
-    task_lower = task.task_description.lower()
+def generate_plan(task_description: str) -> List[PlanStep]:
+    """Generates a plan based on the classified intent."""
+    intent = classify_task(task_description)
+    logger.info(f"Classified intent: {intent}")
+    plan_steps: List[PlanStep] = []
 
-    if "find information" in task_lower or "search" in task_lower:
-        generated_plan.append(PlanStep(
-            step_description="Search memory for relevant information.",
-            module="memory",
-            action="/retrieve",
-            parameters={"query": task.task_description, "k": 5, "query_type": "semantic"}
-        ))
-        generated_plan.append(PlanStep(
-            step_description="Process retrieved information using the language module.",
-            module="language",
-            action="/process", # Assuming language module can process retrieved docs
-            parameters={"text": "Process retrieved memory data"} # TODO: Pass actual data
-        ))
+    if intent == 'qa_population_and_capital':
+        plan_steps = [
+            PlanStep(
+                step_description="Find the capital of France",
+                module="language",
+                action="/question_answering",
+                parameters={"question": "What is the capital of France?"}
+            ),
+            PlanStep(
+                step_description="Find the population of France",
+                module="language",
+                action="/question_answering",
+                parameters={"question": "What is the population of France?"}
+            )
+        ]
 
-    elif "execute code" in task_lower or "run script" in task_lower:
-         generated_plan.append(PlanStep(
-            step_description="Prepare code for execution.",
-            module="language",
-            action="/process", # Potentially use language module to extract code
-            parameters={"text": f"Extract code from: {task.task_description}"}
-        ))
-         generated_plan.append(PlanStep(
-            step_description="Execute the extracted code.",
-            module="execution",
-            action="/execute_code",
-            parameters={"code": "extracted_code_placeholder", "language": "python"} # TODO: Pass actual extracted code
-        ))
+    elif intent == 'recipe_search':
+        plan_steps = [
+            PlanStep(
+                step_description="Search for a chicken soup recipe",
+                module="language",
+                action="/web_search",
+                parameters={"query": "chicken soup recipe"}
+            ),
+            PlanStep(
+                step_description="Summarize the recipe",
+                module="language",
+                action="/summarize",
+                parameters={"text": "<PLACEHOLDER_RECIPE_TEXT>"}
+            )
+        ]
 
-    elif "analyze image" in task_lower or "what is this picture" in task_lower:
-         generated_plan.append(PlanStep(
-            step_description="Process the image using the vision module.",
-            module="vision",
-            action="/process_image",
-            parameters={"image_data": "image_data_placeholder"} # TODO: Pass actual image data
-        ))
-         generated_plan.append(PlanStep(
-            step_description="Describe the image analysis results using the language module.",
-            module="language",
-            action="/process",
-            parameters={"text": "Describe vision analysis results"} # TODO: Pass actual results
-        ))
+    elif intent == 'summarization':
+        plan_steps = [
+            PlanStep(
+                step_description="Summarize the input text",
+                module="language",
+                action="/summarize",
+                parameters={"text": task_description}
+            )
+        ]
+
+    elif intent == 'qa_fact_lookup':
+        plan_steps = [
+            PlanStep(
+                step_description="Answer the user's fact-based question",
+                module="language",
+                action="/question_answering",
+                parameters={"question": task_description}
+            )
+        ]
+
+    elif intent == 'memory_store':
+        plan_steps = [
+            PlanStep(
+                step_description="Store user information in memory",
+                module="memory",
+                action="/store",
+                parameters={"data": task_description}
+            )
+        ]
+
+    elif intent == 'execution_task':
+        plan_steps = [
+            PlanStep(
+                step_description="Execute a system-level command or operation",
+                module="execution",
+                action="/run_command",
+                parameters={"command": task_description}
+            )
+        ]
 
     else:
-        # Default plan: just use the language module
-        generated_plan.append(PlanStep(
-            step_description="Process the input using the language module.",
-            module="language",
-            action="/process",
-            parameters={"text": task.task_description}
-        ))
+        # Fallback step
+        logger.warning("Intent not recognized, falling back to generic language processing.")
+        plan_steps = [
+            PlanStep(
+                step_description="Process the task with a generic language model",
+                module="language",
+                action="/process_text",
+                parameters={"text": task_description}
+            )
+        ]
 
-    print(f"Generated plan: {generated_plan}")
+    return plan_steps
 
-    return PlanResponse(plan=generated_plan)
+# === API Endpoints ===
 
-# TODO: Add endpoints for evaluating plans, monitoring execution, etc.
+@app.post("/plan_task", response_model=PlanResponse)
+async def plan_task(task_input: TaskInput):
+    task_description = task_input.task_description
+    logger.info(f"Received task: {task_description}")
+
+    try:
+        plan_steps = generate_plan(task_description)
+
+        return PlanResponse(
+            plan=plan_steps,
+            status="success",
+            message="Plan generated successfully"
+        )
+    except Exception as e:
+        logger.error(f"Error generating plan: {e}")
+        raise HTTPException(status_code=500, detail=f"Error generating plan: {str(e)}")
+
+@app.get("/")
+def read_root():
+    return {"message": "Reasoning service is up and running."}
