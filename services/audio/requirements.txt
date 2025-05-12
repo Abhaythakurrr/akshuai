@@ -1,0 +1,5 @@
+# akshu-ai/services/audio/requirements.txt
+
+fastapi==0.111.0
+uvicorn==0.30.1
+# Future dependencies will include libraries for audio processing (e.g., openai-whisper, coqui-tts, deepspeech, librosa, soundfile)

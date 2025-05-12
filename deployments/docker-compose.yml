@@ -1,0 +1,118 @@
+# akshu-ai/deployments/docker-compose.yml
+
+version: '3.8'
+
+services:
+  orchestrator:
+    build: ../services/orchestrator
+    ports:
+      - "8000:80"
+    volumes:
+      - ../services/orchestrator:/app
+    # depends_on:
+    #   - language
+    #   - memory
+    # environment:
+    #   - ...
+
+  language:
+    build: ../services/language
+    ports:
+      - "8001:80"
+    volumes:
+      - ../services/language:/app
+    # environment:
+    #   - ...
+
+  memory:
+    build: ../services/memory
+    ports:
+      - "8002:80"
+    volumes:
+      - ../services/memory:/app
+    # environment:
+    #   - ...
+    # depends_on:
+    #   - postgresql # Example dependency
+    #   - neo4j # Example dependency
+    #   - vector_db # Example dependency
+
+  persona:
+    build: ../services/persona
+    ports:
+      - "8003:80"
+    volumes:
+      - ../services/persona:/app
+    # environment:
+    #   - ...
+    # depends_on:
+    #   - postgresql # Example dependency
+
+  vision:
+    build: ../services/vision
+    ports:
+      - "8004:80"
+    volumes:
+      - ../services/vision:/app
+    # environment:
+    #   - ...
+
+  audio:
+    build: ../services/audio
+    ports:
+      - "8005:80"
+    volumes:
+      - ../services/audio:/app
+    # environment:
+    #   - ...
+
+  reasoning:
+    build: ../services/reasoning
+    ports:
+      - "8006:80"
+    volumes:
+      - ../services/reasoning:/app
+    # environment:
+    #   - ...
+    # depends_on:
+    #   - language
+    #   - memory
+    #   - execution
+
+  execution:
+    build: ../services/execution
+    ports:
+      - "8007:80"
+    volumes:
+      - ../services/execution:/app
+    # environment:
+    #   - ...
+
+  # Example database services (uncomment and configure as needed)
+  # postgresql:
+  #   image: postgres:13
+  #   environment:
+  #     POSTGRES_DB: akshuai_db
+  #     POSTGRES_USER: akshuai_user
+  #     POSTGRES_PASSWORD: akshuai_password
+  #   ports:
+  #     - "5432:5432"
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+
+  # neo4j:
+  #   image: neo4j:latest
+  #   environment:
+  #     NEO4J_AUTH: neo4j/neo4j_password
+  #   ports:
+  #     - "7687:7687" # Bolt port
+  #     - "7474:7474" # HTTP port
+  #   volumes:
+  #     - neo4j_data:/data
+
+# volumes:
+#   postgres_data:
+#   neo4j_data:
+# Add volumes for other databases (e.g., vector DB) and message queues
+
+# TODO: Add frontend services (web, mobile, ar-vr) and message queue service (rabbitmq/kafka)
