@@ -3,7 +3,11 @@
 { pkgs, ... }: {
   # Which nixpkgs channel to use.
   channel = "unstable"; # Using unstable for better package availability
-
+# Sets environment variables in the workspace
+  env = {
+    # TODO Get a API key from https://g.co/ai/idxGetGeminiKey
+    GOOGLE_GENAI_API_KEY = "";
+  };
   # Use https://search.nixos.org/packages to find packages
   packages = [
     # Existing packages

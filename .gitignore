@@ -1,3 +1,15 @@
-gitignore
-# Ignore node_modules directory
-node_modules/
+apphosting.emulator.yaml
+apphosting.yaml
+database.rules.json
+docker-compose.yml
+firebase.json
+firestore.indexes.json
+firestore.rules
+flake.lock
+flake.nix
+index.ts
+package-lock.json
+package.json
+remoteconfig.template.json
+storage.rules
+node_modules
